@@ -170,7 +170,7 @@ async function logActivity() {
   if (!qid || !action || !selectedDate) { alert("Please complete all fields."); return; }
 
   document.getElementById("loggingStatus").innerText = "🔄 Logging activity...";
-  const body = new URLSearchParams({ sheetId: "1udsye5wXve9ZrzOZn0agNLTnvAkMaiWRw8wpVhN607g", action, qid, timestamp: selectedDate });
+  const body = new URLSearchParams({ action, qid, timestamp: selectedDate });
   await fetch(webAppURL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
   document.getElementById("status").textContent = `✔️ Logged successfully for ${selectedDate}!`;
   document.getElementById("search").value = "";
