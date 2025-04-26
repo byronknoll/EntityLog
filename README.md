@@ -155,8 +155,8 @@ You will get a **Web App URL** — save this, it will be used in the HTML fronte
 - Edit these two parameters at the top of the `<script>` section:
 
 ```javascript
-const webAppURL = "your-web-app-url";
-const SHEET_CSV_URL = "your-published-csv-url";
+const webAppURL = "YOUR_WEB_APP_URL_HERE";
+const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
 ```
 
 - Host the HTML file:
