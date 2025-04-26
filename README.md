@@ -124,15 +124,19 @@ Example:
 
 ```javascript
 function doPost(e) {
-  const sheetId = e.parameter.sheetId;
+  const sheetId = "YOUR-HARDCODED-SHEET-ID-HERE"; // <- hardcoded
   const ss = SpreadsheetApp.openById(sheetId);
   const sheet = ss.getSheets()[0];
 
   const timestamp = e.parameter.timestamp || new Date().toISOString().split("T")[0];
-  const action = e.parameter.action;
-  const qid = e.parameter.qid;
+  const action = (e.parameter.action || "").trim();
+  const entity = (e.parameter.qid || e.parameter.entity || "").trim();
 
-  sheet.appendRow([timestamp, action, qid]);
+  if (!timestamp || !action || !entity) {
+    return ContentService.createTextOutput("Missing required fields.").setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  sheet.appendRow([timestamp, action, entity]);
 
   return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
 }
