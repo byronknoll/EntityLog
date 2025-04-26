@@ -24,7 +24,7 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
   Remember what you did, where you went, and what you consumed — forever.
 
 - **Future-proof for AI and LLMs:**  
-  When exported as text, the acivity log is conveniently usable for LLM analysis, personalization, and content recommendation.
+  When exported as text, the activity log is conveniently usable for LLM analysis, personalization, and content recommendation.
 
 - **Enables advanced analysis:**  
   Structured data is perfect for running analytics, creating visualizations, summarizing your activities, or generating insights over time.
