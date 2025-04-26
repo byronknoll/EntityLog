@@ -170,9 +170,7 @@ const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
 
 ## Example Screenshots
 
-![Activity Logger](images/log.png)
-
-![Activity Timeline](images/timeline.png)
+![EntityLog](images/entitylog.png)
 
 ![Sheets Screenshot](images/sheets.png)
 
