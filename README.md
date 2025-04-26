@@ -74,7 +74,7 @@ Your history remains **yours for life**.
   The main privacy defense is **keeping your Google Sheets URL and webpage URL private**.
 
 - **Easy to rotate:**  
-  If a leak is suspected, simply duplicate your Sheet and update your HTML file with the new URL.
+  If a leak is suspected, simply duplicate your Sheet and update the code to point to the new path.
 
 This method is simple, robust, and under your full control.
 
