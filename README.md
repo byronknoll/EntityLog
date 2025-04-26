@@ -112,7 +112,7 @@ Customize it to match your lifestyle, logging needs, or even integrate into a br
     (should end in `&output=csv`)
 
 Example:  
-`https://docs.google.com/spreadsheets/d/e/your-sheet-id/pub?gid=0&single=true&output=csv`
+`https://docs.google.com/spreadsheets/d/e/.../pub?gid=0&single=true&output=csv`
 
 ---
 
@@ -142,6 +142,7 @@ function doPost(e) {
 }
 ```
 
+- Replace `YOUR-HARDCODED-SHEET-ID-HERE` with your actual Google Sheet ID.  You can find the Sheet ID in the URL of your Google Sheet between `/d/` and `/edit`.
 - Save the project
 - Deploy as a **Web App**:
   - `Deploy > New Deployment`
