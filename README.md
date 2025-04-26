@@ -1,10 +1,10 @@
-# 📚 EntityLog
+# EntityLog
 
 A lightweight, future-proof activity logger that saves your life events using structured data from Wikidata and OpenStreetMap, stored privately in Google Sheets.
 
 ---
 
-## ✨ What is this?
+## What is this?
 
 EntityLog is a lightweight, mobile-friendly **activity logging system**.  
 It lets you:
@@ -18,7 +18,7 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
 
 ---
 
-## 🚀 Why it's useful
+## Why it's useful
 
 - **Augments your memory:**  
   Remember what you did, where you went, and what you consumed — forever.
@@ -31,7 +31,7 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
 
 ---
 
-## 📦 Why structured entities?
+## Why structured entities?
 
 Instead of freeform notes ("I went to Starbucks"),  
 EntityLog saves the **entity IDs**.
@@ -42,7 +42,7 @@ EntityLog saves the **entity IDs**.
 
 ---
 
-## 🔒 Data Ownership and Portability
+## Data Ownership and Portability
 
 You **own 100% of your data**:
 
@@ -54,7 +54,7 @@ No lock-in, no dependency on hidden proprietary formats.
 
 ---
 
-## 🌎 Will it last forever?
+## Will it last forever?
 
 - **Wikidata and OpenStreetMap** are open-source, long-term projects.
 - Even if either service disappears someday, you still have the raw entity IDs.
@@ -65,7 +65,7 @@ Your history remains **yours for life**.
 
 ---
 
-## 🛡️ Privacy
+## Privacy
 
 - **No logins required.**  
   For convenience and simplicity, there's no authentication system.
@@ -80,7 +80,7 @@ This method is simple, robust, and under your full control.
 
 ---
 
-## 🎨 Easy Customization
+## Easy Customization
 
 EntityLog is:
 - Fully open source
@@ -91,7 +91,7 @@ Customize it to match your lifestyle, logging needs, or even integrate into a br
 
 ---
 
-## 📑 Why Google Sheets?
+## Why Google Sheets?
 
 - **Convenient:** Easily editable manually if needed.
 - **Exportable:** Supports CSV, Excel, and API access.
@@ -99,7 +99,7 @@ Customize it to match your lifestyle, logging needs, or even integrate into a br
 
 ---
 
-## ⚙️ Setup Instructions
+## Setup Instructions
 
 ### 1. Create a Google Sheet
 
@@ -169,7 +169,7 @@ const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
 
 ---
 
-## 📸 Example Screenshots
+## Example Screenshots
 
 ![Activity Logger](images/log.png)
 
@@ -179,11 +179,7 @@ const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
 
 ---
 
-## 🛠️ License
+## License
 
 This project is open source under the **MIT License**.  
 Use it, modify it, build on it freely.
-
----
-
-# 🙌 Happy Logging!
