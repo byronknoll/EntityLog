@@ -2,9 +2,6 @@
 
 A lightweight, future-proof activity logger that saves your life events using structured data from Wikidata and OpenStreetMap, stored privately in Google Sheets.
 
-![Sheets Screenshot Placeholder]  
-![Activity Logger HTML Screenshot Placeholder]
-
 ---
 
 ## ✨ What is this?
@@ -26,8 +23,11 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
 - **Augments your memory:**  
   Remember what you did, where you went, and what you consumed — forever.
 
+- **Future-proof for AI and LLMs:**  
+  Structured logs are directly usable for LLM analysis, personalization, and content recommendation.
+
 - **Enables advanced analysis:**  
-  Structured data is perfect for running analytics, summarizing your activities, or generating insights over time.
+  Structured data is perfect for running analytics, creating visualizations, summarizing your activities, or generating insights over time.
 
 ---
 
@@ -36,7 +36,7 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
 Instead of freeform notes ("I went to Starbucks"),  
 EntityLog saves the **entity IDs**.
 
-✅ If Wikidata or OSM update information (location, history, events), your data stays relevant and becomes richer over time.
+✅ Structured IDs from Wikidata/OSM become richer every year — your old entries gain more metadata automatically.
 
 ✅ Structured metadata enables advanced analytics, better filtering, smarter summaries, and more precise querying in the future.
 
@@ -95,7 +95,6 @@ Customize it to match your lifestyle, logging needs, or even integrate into a br
 
 - **Convenient:** Easily editable manually if needed.
 - **Exportable:** Supports CSV, Excel, and API access.
-- **Flexible:** Can later connect to your own database if you want.
 - **Free:** No hosting fees.
 
 ---
@@ -163,6 +162,16 @@ const SHEET_CSV_URL = "your-published-csv-url";
 - Host the HTML file:
   - You can open it locally (file:///)
   - Or upload it to your own webserver
+
+---
+
+## 📸 Example Screenshots
+
+![Activity Logger](images/log.png)
+
+![Activity Timeline](images/timeline.png)
+
+![Sheets Screenshot](images/sheets.png)
 
 ---
 
