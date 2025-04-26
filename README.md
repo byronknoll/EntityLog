@@ -35,9 +35,9 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
 Instead of freeform notes ("I went to Starbucks"),  
 EntityLog saves the **entity IDs**.
 
-✅ Structured IDs from Wikidata/OSM become richer over time — your old entries gain more metadata automatically.
+- Structured IDs from Wikidata/OSM become richer over time — your old entries gain more metadata automatically.
 
-✅ Structured metadata enables advanced analytics, better filtering, smarter summaries, and more precise querying in the future.
+- Structured metadata enables advanced analytics, better filtering, smarter summaries, and more precise querying in the future.
 
 ---
 
