@@ -130,9 +130,9 @@ function doPost(e) {
 
   const timestamp = e.parameter.timestamp || new Date().toISOString().split("T")[0];
   const action = e.parameter.action;
-  const entity = e.parameter.qid || e.parameter.entity;
+  const qid = e.parameter.qid;
 
-  sheet.appendRow([timestamp, action, entity]);
+  sheet.appendRow([timestamp, action, qid]);
 
   return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
 }
