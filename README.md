@@ -1,6 +1,6 @@
 # EntityLog
 
-A lightweight, future-proof activity logger that uses structured data from Wikidata and OpenStreetMap, stored privately in Google Sheets.
+A lightweight activity logger that uses structured data from Wikidata and OpenStreetMap, stored privately in Google Sheets.
 
 ---
 
