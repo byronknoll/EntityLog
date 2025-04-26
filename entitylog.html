@@ -1,0 +1,288 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Activity Log</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; background: #f2f4f8; margin: 0; }
+    .container { max-width: 480px; margin: auto; padding: 20px; }
+    h2 { text-align: center; color: #333; margin-bottom: 24px; }
+    label { margin-top: 20px; display: block; font-weight: 600; color: #444; }
+    input, select, button { padding: 12px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; box-sizing: border-box; }
+    input, select { width: 100%; margin-top: 8px; }
+    .search-row { display: flex; gap: 8px; margin-top: 8px; }
+    .search-row input { flex: 1; }
+    .search-row button, .submit-button, .export-button {
+      padding: 10px 14px; background-color: #007aff; color: white; font-weight: bold; border: none; border-radius: 8px; cursor: pointer;
+    }
+    .search-row button:hover, .submit-button:hover, .export-button:hover { background-color: #005fcb; }
+    .submit-button { width: 100%; margin-top: 24px; display: block; }
+    .export-button { display: block; margin: 0 auto 10px; }
+    .copy-link { cursor: pointer; color: #007aff; text-decoration: underline; font-size: 14px; margin-left: 6px; }
+    #status, #loggingStatus, #loadingTimeline { margin-top: 10px; text-align: center; font-weight: bold; }
+    #status { color: green; }
+    .timeline { list-style: none; padding-left: 0; margin-top: 20px; }
+    .timeline-item { background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 16px; }
+    .timeline-item h4 { margin: 0 0 8px; color: #007aff; }
+    .timeline-item ul { padding-left: 20px; margin: 0; }
+    .timeline-item li { margin-bottom: 6px; }
+    #toast { visibility: hidden; min-width: 100px; background-color: #333; color: #fff; text-align: center; border-radius: 8px; padding: 10px; position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); z-index: 1; font-size: 16px; opacity: 0; transition: opacity 0.5s ease, visibility 0.5s; }
+    #toast.show { visibility: visible; opacity: 1; }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h2>Log Activity</h2>
+
+    <label>Action (select or type your own):</label>
+    <input list="actionList" id="action" placeholder="e.g. watched">
+    <datalist id="actionList">
+      <option value="watched">
+      <option value="read">
+      <option value="played">
+      <option value="visited">
+      <option value="biked at">
+      <option value="camped at">
+      <option value="exercised at">
+      <option value="bouldered at">
+      <option value="ate at">
+    </datalist>
+
+    <label>Entity Search (Wikidata or OSM):</label>
+    <div class="search-row">
+      <input type="text" id="search" placeholder="e.g. Subway" onkeydown="if (event.key === 'Enter') searchEntities()">
+      <button onclick="searchEntities()">🔍</button>
+    </div>
+
+    <label>Results:</label>
+    <select id="resultSelect"></select>
+
+    <label>Date:</label>
+    <input type="date" id="date">
+
+    <button class="submit-button" onclick="logActivity()">Log It</button>
+
+    <p id="loggingStatus"></p>
+    <p id="status"></p>
+
+    <h2>Your Activity Timeline</h2>
+    <button class="export-button" onclick="exportTimeline()">Export as Text</button>
+
+    <p id="loadingTimeline"></p>
+
+    <ul class="timeline" id="timeline"></ul>
+  </div>
+
+  <div id="toast">Copied!</div>
+
+<script>
+const webAppURL = "YOUR_WEB_APP_URL_HERE";
+const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
+let timelineText = "";
+
+window.onload = () => {
+  const today = new Date();
+  document.getElementById("date").value = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+  buildTimeline();
+};
+
+async function searchEntities() {
+  const query = document.getElementById("search").value.trim();
+  const select = document.getElementById("resultSelect");
+  if (!query) { alert("Please enter a search term."); select.innerHTML = ""; return; }
+  select.innerHTML = "<option>Searching...</option>";
+
+  const wikidataRes = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&format=json&origin=*`);
+  const wikidataData = await wikidataRes.json();
+
+  const osmRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+  const osmData = await osmRes.json();
+
+  select.innerHTML = "";
+
+  wikidataData.search.forEach(item => {
+    const option = document.createElement("option");
+    option.value = `wikidata:${item.id.trim()}`;
+    option.text = `[Wikidata] ${item.label} (${item.id}) — ${item.description || ''}`;
+    select.appendChild(option);
+  });
+
+  osmData.forEach(item => {
+    const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
+    const option = document.createElement("option");
+    option.value = `osm:${osmId}`;
+    option.text = `[OSM] ${item.display_name}`;
+    select.appendChild(option);
+  });
+}
+
+async function fetchWikidata(qid) {
+  const url = `https://query.wikidata.org/sparql?format=json&query=` + encodeURIComponent(`
+    SELECT ?label ?description ?year ?kgid ?freebase WHERE {
+      OPTIONAL { wd:${qid} rdfs:label ?label FILTER (lang(?label)="en") }
+      OPTIONAL { wd:${qid} schema:description ?description FILTER (lang(?description)="en") }
+      OPTIONAL { wd:${qid} wdt:P577 ?publicationDate. BIND(YEAR(?publicationDate) AS ?year) }
+      OPTIONAL { wd:${qid} wdt:P2671 ?kgid }
+      OPTIONAL { wd:${qid} wdt:P646 ?freebase }
+    }`);
+  const res = await fetch(url);
+  const data = await res.json();
+  const result = data.results.bindings[0] || {};
+  return {
+    label: result.label?.value || "(Unknown)",
+    description: result.description?.value || "(No description)",
+    year: result.year?.value || "",
+    kgid: result.kgid?.value,
+    freebase: result.freebase?.value
+  };
+}
+
+async function fetchOSMLabel(osmId) {
+  const [type, id] = osmId.split("/");
+  const typeLetter = { node: "N", way: "W", relation: "R" }[type];
+  if (!typeLetter) return { label: "(Unknown)", description: "(OpenStreetMap)" };
+
+  const url = `https://nominatim.openstreetmap.org/lookup?osm_ids=${typeLetter}${id}&format=json`;
+  const res = await fetch(url);
+  const data = await res.json();
+
+  if (data.length > 0) {
+    const firstResult = data[0];
+    let label = firstResult.localname || firstResult.display_name.split(",")[0] || "(Unknown)";
+    let description = firstResult.display_name || "(OpenStreetMap)";
+    if (description.startsWith(label + ",")) {
+      description = description.substring(label.length + 1).trim();
+    }
+    return { label, description };
+  } else {
+    return { label: "(Unknown)", description: "(OpenStreetMap)" };
+  }
+}
+
+// --- Log Activity
+async function logActivity() {
+  const qid = document.getElementById("resultSelect").value.trim();
+  const action = document.getElementById("action").value.trim().toLowerCase();
+  const selectedDate = document.getElementById("date").value;
+  if (!qid || !action || !selectedDate) { alert("Please complete all fields."); return; }
+
+  document.getElementById("loggingStatus").innerText = "🔄 Logging activity...";
+  const body = new URLSearchParams({ sheetId: "1udsye5wXve9ZrzOZn0agNLTnvAkMaiWRw8wpVhN607g", action, qid, timestamp: selectedDate });
+  await fetch(webAppURL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+  document.getElementById("status").textContent = `✔️ Logged successfully for ${selectedDate}!`;
+  document.getElementById("search").value = "";
+  document.getElementById("resultSelect").innerHTML = "";
+  document.getElementById("action").value = "";
+  document.getElementById("date").value = new Date().toISOString().split('T')[0];
+  await buildTimeline();
+  document.getElementById("loggingStatus").innerText = "";
+}
+
+// --- Build Timeline
+async function buildTimeline() {
+  const timeline = document.getElementById("timeline");
+  timeline.innerHTML = "";
+  document.getElementById("loadingTimeline").innerText = "🔄 Loading timeline...";
+  timelineText = "";
+
+  const res = await fetch(SHEET_CSV_URL);
+  const text = await res.text();
+  const rows = text.trim().split("\n").map(row => row.split(","));
+  rows.shift(); // remove header
+
+  const cache = {};
+  const grouped = {};
+
+  for (const [timestamp, action, qid] of rows) {
+    if (!grouped[timestamp]) grouped[timestamp] = [];
+    grouped[timestamp].push({ action, qid });
+  }
+
+  const actionIcons = {
+    watched: "📺", read: "📖", played: "🎮", visited: "📍",
+    "biked at": "🚴", "camped at": "⛺", "hiked at": "🥾",
+    "bouldered at": "🧗", "exercised at": "🏋️", "ate at": "🍽️"
+  };
+
+  for (const timestamp of Object.keys(grouped).sort().reverse()) {
+    const dayEntry = document.createElement("li");
+    dayEntry.className = "timeline-item";
+    const dayHeader = `<h4>${timestamp}</h4>`;
+    let content = "<ul>";
+    timelineText += `\n${timestamp}\n`;
+
+    for (const { action, qid } of grouped[timestamp]) {
+      const trimmedQid = (qid || "").trim();
+      const icon = actionIcons[action] || "";
+      let label = trimmedQid;
+      let description = "";
+      let link = "";
+
+      if (trimmedQid.startsWith("wikidata:")) {
+        const id = trimmedQid.split(":")[1];
+        if (!cache[id]) cache[id] = await fetchWikidata(id);
+        const data = cache[id];
+        label = data.label;
+        description = data.description;
+        if (data.kgid) {
+          link = `https://www.google.com/search?kgmid=${data.kgid}`;
+        } else if (data.freebase) {
+          link = `https://www.google.com/search?kgmid=${data.freebase}`;
+        } else {
+          link = `https://www.wikidata.org/wiki/${id}`;
+        }
+      } else if (trimmedQid.startsWith("osm:")) {
+        const id = trimmedQid.split(":")[1];
+        if (!cache[id]) cache[id] = await fetchOSMLabel(id);
+        const data = cache[id];
+        label = data.label;
+        description = data.description;
+        link = `https://www.openstreetmap.org/${id}`;
+      }
+
+      content += `<li>${icon} You ${action} <a href="${link}" target="_blank"><strong>"${label}"</strong></a> — ${description} <span class="copy-link" data-qid="${trimmedQid}" data-action="${action}" data-label="${label}" onclick="copyActivity(this)">[copy]</span></li>`;
+      timelineText += `- You ${action} "${label}" — ${description}\n`;
+    }
+
+    content += "</ul>";
+    dayEntry.innerHTML = dayHeader + content;
+    timeline.appendChild(dayEntry);
+  }
+
+  document.getElementById("loadingTimeline").innerText = "";
+}
+
+// --- Export Timeline
+function exportTimeline() {
+  const textWindow = window.open("", "_blank");
+  textWindow.document.write(`<pre>${timelineText.trim()}</pre>`);
+  textWindow.document.title = "Exported Activity Log";
+  textWindow.document.close();
+}
+
+// --- Copy Activity
+function copyActivity(el) {
+  document.getElementById("action").value = el.dataset.action;
+  const select = document.getElementById("resultSelect");
+  const newOption = document.createElement("option");
+  newOption.value = el.dataset.qid;
+  newOption.text = el.dataset.label;
+  newOption.selected = true;
+  select.appendChild(newOption);
+  showToast("Copied!");
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// --- Show Toast
+function showToast(message) {
+  const toast = document.getElementById("toast");
+  toast.innerText = message;
+  toast.className = "show";
+  setTimeout(() => { toast.className = toast.className.replace("show", ""); }, 2000);
+}
+</script>
+</body>
+</html>
