@@ -6,8 +6,7 @@ A lightweight, future-proof activity logger that saves your life events using st
 
 ## What is this?
 
-EntityLog is a lightweight, mobile-friendly **activity logging system**.  
-It lets you:
+EntityLog lets you:
 - Search for real-world entities (from Wikidata and OpenStreetMap)
 - Log actions like "watched", "played", "ate at", etc
 - View your activities in a clean timeline
