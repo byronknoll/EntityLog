@@ -164,7 +164,7 @@ const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
 ```
 
 - Host the HTML file:
-  - You can open it locally or host it on a webserver
+  - You can open it locally or host it on a web server
 
 ---
 
