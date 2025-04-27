@@ -113,17 +113,21 @@ async function searchEntities() {
   const wikidataRes = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&format=json&origin=*`);
   const wikidataData = await wikidataRes.json();
 
-  // OSM search (local if possible)
-  let osmURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+  // Start both OSM searches
+  let osmLocalURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
   if (lat && lon) {
-    const bias = `&viewbox=${lon-0.2},${lat+0.2},${lon+0.2},${lat-0.2}&bounded=1`;
-    osmURL += bias;
+    osmLocalURL += `&viewbox=${lon-0.2},${lat+0.2},${lon+0.2},${lat-0.2}&bounded=1`;
   }
-  const osmRes = await fetch(osmURL);
-  const osmData = await osmRes.json();
+  const osmGlobalURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+
+  const [osmLocalRes, osmGlobalRes] = await Promise.all([
+    fetch(osmLocalURL).then(r => r.json()),
+    fetch(osmGlobalURL).then(r => r.json())
+  ]);
 
   select.innerHTML = "";
 
+  // Add Wikidata results
   wikidataData.search.forEach(item => {
     const option = document.createElement("option");
     option.value = `wikidata:${item.id.trim()}`;
@@ -131,12 +135,25 @@ async function searchEntities() {
     select.appendChild(option);
   });
 
-  osmData.forEach(item => {
+  // Add OSM local results first
+  osmLocalRes.forEach(item => {
     const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
     const option = document.createElement("option");
     option.value = `osm:${osmId}`;
-    option.text = `[OSM] ${item.display_name}`;
+    option.text = `[OSM Nearby] ${item.display_name}`;
     select.appendChild(option);
+  });
+
+  // Then add OSM global results that are not already in local
+  const localIds = new Set(osmLocalRes.map(item => `${item.osm_type.toLowerCase()}/${item.osm_id}`));
+  osmGlobalRes.forEach(item => {
+    const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
+    if (!localIds.has(osmId)) {
+      const option = document.createElement("option");
+      option.value = `osm:${osmId}`;
+      option.text = `[OSM Global] ${item.display_name}`;
+      select.appendChild(option);
+    }
   });
 }
 
