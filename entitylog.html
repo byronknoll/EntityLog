@@ -176,7 +176,8 @@ async function logActivity() {
   document.getElementById("search").value = "";
   document.getElementById("resultSelect").innerHTML = "";
   document.getElementById("action").value = "";
-  document.getElementById("date").value = new Date().toISOString().split('T')[0];
+  const todayLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
+  document.getElementById("date").value = todayLocal;
   await buildTimeline();
   document.getElementById("loggingStatus").innerText = "";
 }
