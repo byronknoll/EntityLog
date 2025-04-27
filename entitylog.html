@@ -49,6 +49,7 @@
       <option value="exercised at">
       <option value="bouldered at">
       <option value="ate at">
+      <option value="shopped at">
     </datalist>
 
     <label>Entity Search (Wikidata or OSM):</label>
@@ -95,10 +96,30 @@ async function searchEntities() {
   if (!query) { alert("Please enter a search term."); select.innerHTML = ""; return; }
   select.innerHTML = "<option>Searching...</option>";
 
+  let lat = null, lon = null;
+
+  // Try to get user's location
+  try {
+    const pos = await new Promise((resolve, reject) => {
+      navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
+    });
+    lat = pos.coords.latitude;
+    lon = pos.coords.longitude;
+  } catch (e) {
+    console.warn("Could not get location, searching globally.");
+  }
+
+  // Wikidata search (global)
   const wikidataRes = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&format=json&origin=*`);
   const wikidataData = await wikidataRes.json();
 
-  const osmRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`);
+  // OSM search (local if possible)
+  let osmURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+  if (lat && lon) {
+    const bias = `&viewbox=${lon-0.2},${lat+0.2},${lon+0.2},${lat-0.2}&bounded=1`;
+    osmURL += bias;
+  }
+  const osmRes = await fetch(osmURL);
   const osmData = await osmRes.json();
 
   select.innerHTML = "";
@@ -205,7 +226,8 @@ async function buildTimeline() {
   const actionIcons = {
     watched: "📺", read: "📖", played: "🎮", visited: "📍",
     "biked at": "🚴", "camped at": "⛺", "hiked at": "🥾",
-    "bouldered at": "🧗", "exercised at": "🏋️", "ate at": "🍽️"
+    "bouldered at": "🧗", "exercised at": "🏋️", "ate at": "🍽️",
+    "shopped at": "🛍️"
   };
 
   for (const timestamp of Object.keys(grouped).sort().reverse()) {
