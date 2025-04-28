@@ -97,8 +97,6 @@ async function searchEntities() {
   select.innerHTML = "<option>Searching...</option>";
 
   let lat = null, lon = null;
-
-  // Try to get user's location
   try {
     const pos = await new Promise((resolve, reject) => {
       navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
@@ -109,11 +107,76 @@ async function searchEntities() {
     console.warn("Could not get location, searching globally.");
   }
 
-  // Wikidata search (global)
-  const wikidataRes = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&format=json&origin=*`);
-  const wikidataData = await wikidataRes.json();
+  // --- Step 1: Wikidata Exact Search
+  const wikidataExactRes = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&limit=5&format=json&origin=*`);
+  const wikidataExactData = await wikidataExactRes.json();
+  const exactResults = wikidataExactData.search.map(item => ({
+    qid: item.id,
+    label: item.label,
+    description: item.description || "(No description)"
+  }));
 
-  // Start both OSM searches
+  // --- Step 2: Wikipedia Fulltext Search
+  const wikipediaRes = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`);
+  const wikipediaData = await wikipediaRes.json();
+  const searchResults = wikipediaData.query.search;
+
+  // Lookup Wikidata mappings for Wikipedia pages
+  const titles = searchResults.map(r => r.title).join("|");
+  const pagePropsRes = await fetch(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(titles)}&prop=pageprops&format=json&origin=*`);
+  const pagePropsData = await pagePropsRes.json();
+
+  // Map Wikipedia titles to QIDs
+  const qidMap = {};
+  const pages = pagePropsData.query.pages;
+  for (const pageId in pages) {
+    const page = pages[pageId];
+    if (page.pageprops && page.pageprops.wikibase_item) {
+      qidMap[page.title] = page.pageprops.wikibase_item;
+    }
+  }
+
+  // Now batch query Wikidata for real labels/descriptions
+  const qidsFromWikipedia = Object.values(qidMap).filter(qid => !!qid);
+  let wikidataInfo = {};
+
+  if (qidsFromWikipedia.length > 0) {
+    const sparql = `
+      SELECT ?item ?itemLabel ?itemDescription WHERE {
+        VALUES ?item { ${qidsFromWikipedia.map(id => `wd:${id}`).join(' ')} }
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      }
+    `;
+    const wikidataRes = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`);
+    if (wikidataRes.ok) {
+      const wikidataData = await wikidataRes.json();
+      wikidataData.results.bindings.forEach(entry => {
+        const qid = entry.item.value.split('/').pop();
+        wikidataInfo[qid] = {
+          label: entry.itemLabel?.value || "(Unknown)",
+          description: entry.itemDescription?.value || "(No description)"
+        };
+      });
+    } else {
+      console.error("Wikidata SPARQL error");
+    }
+  }
+
+  // Build the Wikipedia-based list (filtered to available QIDs)
+  const wikipediaResults = [];
+  for (const result of searchResults) {
+    const qid = qidMap[result.title];
+    if (qid && !exactResults.find(x => x.qid === qid) && wikidataInfo[qid]) { // deduplicate
+      wikipediaResults.push({
+        qid: qid,
+        label: wikidataInfo[qid].label,
+        description: wikidataInfo[qid].description
+      });
+    }
+    if (wikipediaResults.length >= 5) break; // only take 5
+  }
+
+  // --- Step 3: OSM Local and Global
   let osmLocalURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
   if (lat && lon) {
     osmLocalURL += `&viewbox=${lon-0.2},${lat+0.2},${lon+0.2},${lat-0.2}&bounded=1`;
@@ -125,17 +188,26 @@ async function searchEntities() {
     fetch(osmGlobalURL).then(r => r.json())
   ]);
 
+  // --- Step 4: Display results
   select.innerHTML = "";
 
-  // Add Wikidata results
-  wikidataData.search.forEach(item => {
+  // Exact Wikidata matches first
+  exactResults.forEach(item => {
     const option = document.createElement("option");
-    option.value = `wikidata:${item.id.trim()}`;
-    option.text = `[Wikidata] ${item.label} (${item.id}) — ${item.description || ''}`;
+    option.value = `wikidata:${item.qid}`;
+    option.text = `[Wikidata Exact] ${item.label} (${item.qid}) — ${item.description}`;
     select.appendChild(option);
   });
 
-  // Add OSM local results first
+  // Wikipedia-based Wikidata matches second
+  wikipediaResults.forEach(item => {
+    const option = document.createElement("option");
+    option.value = `wikidata:${item.qid}`;
+    option.text = `[Wikidata Related] ${item.label} (${item.qid}) — ${item.description}`;
+    select.appendChild(option);
+  });
+
+  // OSM local results
   osmLocalRes.forEach(item => {
     const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
     const option = document.createElement("option");
@@ -144,7 +216,7 @@ async function searchEntities() {
     select.appendChild(option);
   });
 
-  // Then add OSM global results that are not already in local
+  // OSM global fallback results
   const localIds = new Set(osmLocalRes.map(item => `${item.osm_type.toLowerCase()}/${item.osm_id}`));
   osmGlobalRes.forEach(item => {
     const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
