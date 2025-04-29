@@ -229,27 +229,6 @@ async function searchEntities() {
   });
 }
 
-async function fetchWikidata(qid) {
-  const url = `https://query.wikidata.org/sparql?format=json&query=` + encodeURIComponent(`
-    SELECT ?label ?description ?year ?kgid ?freebase WHERE {
-      OPTIONAL { wd:${qid} rdfs:label ?label FILTER (lang(?label)="en") }
-      OPTIONAL { wd:${qid} schema:description ?description FILTER (lang(?description)="en") }
-      OPTIONAL { wd:${qid} wdt:P577 ?publicationDate. BIND(YEAR(?publicationDate) AS ?year) }
-      OPTIONAL { wd:${qid} wdt:P2671 ?kgid }
-      OPTIONAL { wd:${qid} wdt:P646 ?freebase }
-    }`);
-  const res = await fetch(url);
-  const data = await res.json();
-  const result = data.results.bindings[0] || {};
-  return {
-    label: result.label?.value || "(Unknown)",
-    description: result.description?.value || "(No description)",
-    year: result.year?.value || "",
-    kgid: result.kgid?.value,
-    freebase: result.freebase?.value
-  };
-}
-
 async function fetchOSMLabelsInBatch(osmIds) {
   if (osmIds.length === 0) return {};
 
