@@ -337,22 +337,26 @@ async function buildTimeline() {
   // --- Batch fetch missing Wikidata entries
   if (qidsToFetch.size > 0) {
     const qidArray = Array.from(qidsToFetch);
-    const sparql = `
-      SELECT ?item ?itemLabel ?itemDescription WHERE {
-        VALUES ?item { ${qidArray.map(id => `wd:${id}`).join(' ')} }
-        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-      }
-    `;
+  const sparql = `
+    SELECT ?item ?itemLabel ?itemDescription ?kgid ?freebase WHERE {
+      VALUES ?item { ${qidArray.map(id => `wd:${id}`).join(' ')} }
+      OPTIONAL { ?item wdt:P2671 ?kgid. }
+      OPTIONAL { ?item wdt:P646 ?freebase. }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    }
+  `;
     const wikidataRes = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`);
     if (wikidataRes.ok) {
       const wikidataData = await wikidataRes.json();
-      wikidataData.results.bindings.forEach(entry => {
-        const id = entry.item.value.split('/').pop();
-        cache[id] = {
-          label: entry.itemLabel?.value || "(Unknown)",
-          description: entry.itemDescription?.value || "(No description)"
-        };
-      });
+	wikidataData.results.bindings.forEach(entry => {
+	  const id = entry.item.value.split('/').pop();
+	  cache[id] = {
+	    label: entry.itemLabel?.value || "(Unknown)",
+	    description: entry.itemDescription?.value || "(No description)",
+	    kgid: entry.kgid?.value || null,
+	    freebase: entry.freebase?.value || null
+	  };
+	});
     } else {
       console.error("Wikidata SPARQL error during timeline build.");
     }
@@ -394,7 +398,14 @@ async function buildTimeline() {
         const data = cache[id];
         label = data?.label || "(Unknown)";
         description = data?.description || "(No description)";
-        link = `https://www.wikidata.org/wiki/${id}`;
+  
+        if (data?.kgid) {
+          link = `https://www.google.com/search?kgmid=${data.kgid}`;
+        } else if (data?.freebase) {
+          link = `https://www.google.com/search?kgmid=${data.freebase}`;
+        } else {
+          link = `https://www.wikidata.org/wiki/${id}`;
+        }
       } else if (trimmedQid.startsWith("osm:")) {
         const id = trimmedQid.split(":")[1];
         const data = cache[id];
