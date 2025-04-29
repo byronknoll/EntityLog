@@ -250,26 +250,33 @@ async function fetchWikidata(qid) {
   };
 }
 
-async function fetchOSMLabel(osmId) {
-  const [type, id] = osmId.split("/");
-  const typeLetter = { node: "N", way: "W", relation: "R" }[type];
-  if (!typeLetter) return { label: "(Unknown)", description: "(OpenStreetMap)" };
+async function fetchOSMLabelsInBatch(osmIds) {
+  if (osmIds.length === 0) return {};
 
-  const url = `https://nominatim.openstreetmap.org/lookup?osm_ids=${typeLetter}${id}&format=json`;
+  // Group all osm_ids into one lookup query
+  const osmIdList = osmIds.map(osmId => {
+    const [type, id] = osmId.split("/");
+    const typeLetter = { node: "N", way: "W", relation: "R" }[type];
+    return `${typeLetter}${id}`;
+  }).filter(Boolean); // Remove bad ids
+
+  const url = `https://nominatim.openstreetmap.org/lookup?osm_ids=${osmIdList.join(",")}&format=json`;
   const res = await fetch(url);
   const data = await res.json();
 
-  if (data.length > 0) {
-    const firstResult = data[0];
-    let label = firstResult.localname || firstResult.display_name.split(",")[0] || "(Unknown)";
-    let description = firstResult.display_name || "(OpenStreetMap)";
-    if (description.startsWith(label + ",")) {
-      description = description.substring(label.length + 1).trim();
+  const result = {};
+  if (Array.isArray(data)) {
+    for (const place of data) {
+      const osmId = `${place.osm_type.toLowerCase()}/${place.osm_id}`;
+      let label = place.localname || place.display_name.split(",")[0] || "(Unknown)";
+      let description = place.display_name || "(OpenStreetMap)";
+      if (description.startsWith(label + ",")) {
+        description = description.substring(label.length + 1).trim();
+      }
+      result[osmId] = { label, description };
     }
-    return { label, description };
-  } else {
-    return { label: "(Unknown)", description: "(OpenStreetMap)" };
   }
+  return result;
 }
 
 // --- Log Activity
@@ -304,14 +311,63 @@ async function buildTimeline() {
   const rows = text.trim().split("\n").map(row => row.split(","));
   rows.shift(); // remove header
 
-  const cache = {};
   const grouped = {};
+  const qidsToFetch = new Set();
+  const osmsToFetch = new Set();
+  const cache = {};
 
   for (const [timestamp, action, qid] of rows) {
     if (!grouped[timestamp]) grouped[timestamp] = [];
     grouped[timestamp].push({ action, qid });
+    
+    const trimmedQid = (qid || "").trim();
+    if (trimmedQid.startsWith("wikidata:")) {
+      const id = trimmedQid.split(":")[1];
+      if (!cache[id]) {
+        qidsToFetch.add(id);
+      }
+    } else if (trimmedQid.startsWith("osm:")) {
+      const id = trimmedQid.split(":")[1];
+      if (!cache[id]) {
+        osmsToFetch.add(id);
+      }
+    }
   }
 
+  // --- Batch fetch missing Wikidata entries
+  if (qidsToFetch.size > 0) {
+    const qidArray = Array.from(qidsToFetch);
+    const sparql = `
+      SELECT ?item ?itemLabel ?itemDescription WHERE {
+        VALUES ?item { ${qidArray.map(id => `wd:${id}`).join(' ')} }
+        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+      }
+    `;
+    const wikidataRes = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`);
+    if (wikidataRes.ok) {
+      const wikidataData = await wikidataRes.json();
+      wikidataData.results.bindings.forEach(entry => {
+        const id = entry.item.value.split('/').pop();
+        cache[id] = {
+          label: entry.itemLabel?.value || "(Unknown)",
+          description: entry.itemDescription?.value || "(No description)"
+        };
+      });
+    } else {
+      console.error("Wikidata SPARQL error during timeline build.");
+    }
+  }
+  
+  // --- Before building the DOM, batch fetch all OSM missing labels
+  if (osmsToFetch.size > 0) {
+    const osmArray = Array.from(osmsToFetch);
+    const osmData = await fetchOSMLabelsInBatch(osmArray);
+    for (const id in osmData) {
+      cache[id] = osmData[id];
+    }
+  }
+
+  // --- Build Timeline normally
   const actionIcons = {
     watched: "📺", read: "📖", played: "🎮", visited: "📍",
     "biked at": "🚴", "camped at": "⛺", "hiked at": "🥾",
@@ -335,23 +391,15 @@ async function buildTimeline() {
 
       if (trimmedQid.startsWith("wikidata:")) {
         const id = trimmedQid.split(":")[1];
-        if (!cache[id]) cache[id] = await fetchWikidata(id);
         const data = cache[id];
-        label = data.label;
-        description = data.description;
-        if (data.kgid) {
-          link = `https://www.google.com/search?kgmid=${data.kgid}`;
-        } else if (data.freebase) {
-          link = `https://www.google.com/search?kgmid=${data.freebase}`;
-        } else {
-          link = `https://www.wikidata.org/wiki/${id}`;
-        }
+        label = data?.label || "(Unknown)";
+        description = data?.description || "(No description)";
+        link = `https://www.wikidata.org/wiki/${id}`;
       } else if (trimmedQid.startsWith("osm:")) {
         const id = trimmedQid.split(":")[1];
-        if (!cache[id]) cache[id] = await fetchOSMLabel(id);
         const data = cache[id];
-        label = data.label;
-        description = data.description;
+        label = data?.label || "(Unknown)";
+        description = data?.description || "(OpenStreetMap)";
         link = `https://www.openstreetmap.org/${id}`;
       }
 
