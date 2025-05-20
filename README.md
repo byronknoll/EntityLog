@@ -4,6 +4,14 @@ A lightweight activity logger that uses structured data from Wikidata and OpenSt
 
 ---
 
+## Example Screenshots
+
+![EntityLog](images/entitylog.png)
+
+![Sheets Screenshot](images/sheets.png)
+
+---
+
 ## What is this?
 
 EntityLog lets you:
@@ -165,14 +173,6 @@ const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
 
 - Host the HTML file:
   - You can open it locally or host it on a web server
-
----
-
-## Example Screenshots
-
-![EntityLog](images/entitylog.png)
-
-![Sheets Screenshot](images/sheets.png)
 
 ---
 
