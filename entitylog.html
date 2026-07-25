@@ -1,10 +1,17 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Activity Log</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex, nofollow">
+  <!-- Preconnect to external APIs used for entity search / timeline rendering to shave DNS/TLS time off first requests -->
+  <link rel="preconnect" href="https://nominatim.openstreetmap.org">
+  <link rel="preconnect" href="https://www.wikidata.org">
+  <link rel="preconnect" href="https://en.wikipedia.org">
+  <link rel="preconnect" href="https://query.wikidata.org">
+  <link rel="preconnect" href="https://docs.google.com">
+  <link rel="preconnect" href="https://script.google.com">
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif; background: #f2f4f8; margin: 0; }
     .container { max-width: 480px; margin: auto; padding: 20px; }
@@ -55,7 +62,7 @@
     <label>Entity Search (Wikidata or OSM):</label>
     <div class="search-row">
       <input type="text" id="search" placeholder="e.g. The Dark Knight" onkeydown="if (event.key === 'Enter') searchEntities()">
-      <button onclick="searchEntities()">🔍</button>
+      <button id="searchButton" onclick="searchEntities()">Search</button>
     </div>
 
     <label>Results:</label>
@@ -64,7 +71,7 @@
     <label>Date:</label>
     <input type="date" id="date">
 
-    <button class="submit-button" onclick="logActivity()">Log It</button>
+    <button id="logButton" class="submit-button" onclick="logActivity()">Log It</button>
 
     <p id="loggingStatus"></p>
     <p id="status"></p>
@@ -82,151 +89,226 @@
 <script>
 const webAppURL = "YOUR_WEB_APP_URL_HERE";
 const SHEET_CSV_URL = "YOUR_SHEET_CSV_URL_HERE";
+const TIMELINE_DAYS_LIMIT = 30;
 let timelineText = "";
+let showFullTimeline = false;
+let allRows = [];
+const entityCache = {};
+let searchInFlight = false;
+let loggingInFlight = false;
+let buildTimelineInFlight = false;
+
+// --- Fetch JSON from a URL, throwing a descriptive error on non-2xx responses
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Request failed: ${url} (HTTP ${res.status})`);
+  return res.json();
+}
+
+// --- Format a Date as YYYY-MM-DD in the user's local timezone (not UTC)
+function toLocalDateString(date) {
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+}
+
+// --- Batch fetch label/description (and optionally external IDs like Google Knowledge Graph / Freebase) for a list of Wikidata QIDs.
+// Shared by searchEntities() (Wikipedia-derived results) and ensureEntityCache() (timeline rendering).
+async function fetchWikidataBatch(qids, { includeExternalIds = false } = {}) {
+  if (qids.length === 0) return {};
+
+  const sparql = includeExternalIds ? `
+    SELECT ?item ?itemLabel ?itemDescription (SAMPLE(?kgid) AS ?kgid) (SAMPLE(?freebase) AS ?freebase) WHERE {
+      VALUES ?item { ${qids.map(id => `wd:${id}`).join(' ')} }
+      OPTIONAL { ?item wdt:P2671 ?kgid. }
+      OPTIONAL { ?item wdt:P646 ?freebase. }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en,mul". }
+    }
+    GROUP BY ?item ?itemLabel ?itemDescription
+  ` : `
+    SELECT ?item ?itemLabel ?itemDescription WHERE {
+      VALUES ?item { ${qids.map(id => `wd:${id}`).join(' ')} }
+      SERVICE wikibase:label { bd:serviceParam wikibase:language "en,mul". }
+    }
+  `;
+
+  const data = await fetchJSON(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`);
+  const result = {};
+  data.results.bindings.forEach(entry => {
+    const id = entry.item.value.split('/').pop();
+    result[id] = {
+      label: entry.itemLabel?.value || "(Unknown)",
+      description: entry.itemDescription?.value || "(No description)",
+      kgid: entry.kgid?.value || null,
+      freebase: entry.freebase?.value || null
+    };
+  });
+  return result;
+}
 
 window.onload = () => {
-  const today = new Date();
-  document.getElementById("date").value = new Date(today.getTime() - today.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+  document.getElementById("date").value = toLocalDateString(new Date());
   buildTimeline();
 };
 
 async function searchEntities() {
+  if (searchInFlight) return; // ignore overlapping search requests
+
   const query = document.getElementById("search").value.trim();
   const select = document.getElementById("resultSelect");
   if (!query) { alert("Please enter a search term."); select.innerHTML = ""; return; }
+
+  const searchButton = document.getElementById("searchButton");
+  searchInFlight = true;
+  if (searchButton) searchButton.disabled = true;
   select.innerHTML = "<option>Searching...</option>";
 
-  let lat = null, lon = null;
   try {
-    const pos = await new Promise((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
-    });
-    lat = pos.coords.latitude;
-    lon = pos.coords.longitude;
-  } catch (e) {
-    console.warn("Could not get location, searching globally.");
-  }
-
-  // --- Step 1: Wikidata Exact Search
-  const wikidataExactRes = await fetch(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&limit=5&format=json&origin=*`);
-  const wikidataExactData = await wikidataExactRes.json();
-  const exactResults = wikidataExactData.search.map(item => ({
-    qid: item.id,
-    label: item.label,
-    description: item.description || "(No description)"
-  }));
-
-  // --- Step 2: Wikipedia Fulltext Search
-  const wikipediaRes = await fetch(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`);
-  const wikipediaData = await wikipediaRes.json();
-  const searchResults = wikipediaData.query.search;
-
-  // Lookup Wikidata mappings for Wikipedia pages
-  const titles = searchResults.map(r => r.title).join("|");
-  const pagePropsRes = await fetch(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(titles)}&prop=pageprops&format=json&origin=*`);
-  const pagePropsData = await pagePropsRes.json();
-
-  // Map Wikipedia titles to QIDs
-  const qidMap = {};
-  const pages = pagePropsData.query.pages;
-  for (const pageId in pages) {
-    const page = pages[pageId];
-    if (page.pageprops && page.pageprops.wikibase_item) {
-      qidMap[page.title] = page.pageprops.wikibase_item;
+    let lat = null, lon = null;
+    try {
+      const pos = await new Promise((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 5000 });
+      });
+      lat = pos.coords.latitude;
+      lon = pos.coords.longitude;
+    } catch (e) {
+      console.warn("Could not get location, searching globally.");
     }
-  }
 
-  // Now batch query Wikidata for real labels/descriptions
-  const qidsFromWikipedia = Object.values(qidMap).filter(qid => !!qid);
-  let wikidataInfo = {};
+    // --- Kick off OSM local/global lookup now (only depends on lat/lon, not on Wikidata/Wikipedia)
+    const hasLocation = lat !== null && lon !== null;
+    let osmLocalURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+    if (hasLocation) {
+      osmLocalURL += `&viewbox=${lon-0.2},${lat+0.2},${lon+0.2},${lat-0.2}&bounded=1`;
+    }
+    // Without a location bias, the "global" query would be byte-for-byte identical to the local one — skip the redundant request
+    const osmResultsPromise = Promise.allSettled([
+      fetchJSON(osmLocalURL),
+      hasLocation ? fetchJSON(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`) : Promise.resolve(null)
+    ]);
 
-  if (qidsFromWikipedia.length > 0) {
-    const sparql = `
-      SELECT ?item ?itemLabel ?itemDescription WHERE {
-        VALUES ?item { ${qidsFromWikipedia.map(id => `wd:${id}`).join(' ')} }
-        SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
+    // --- Step 1 & 2: Wikidata Exact Search and Wikipedia Fulltext Search run in parallel.
+    // Use allSettled so a failure in one doesn't blank out results from the other.
+    const [wikidataExactSettled, wikipediaSettled] = await Promise.allSettled([
+      fetchJSON(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${encodeURIComponent(query)}&language=en&limit=5&format=json&origin=*`),
+      fetchJSON(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`)
+    ]);
+    if (wikidataExactSettled.status === "rejected") console.error("Wikidata exact search failed:", wikidataExactSettled.reason);
+    if (wikipediaSettled.status === "rejected") console.error("Wikipedia search failed:", wikipediaSettled.reason);
+    const wikidataExactData = wikidataExactSettled.status === "fulfilled" ? wikidataExactSettled.value : { search: [] };
+    const wikipediaData = wikipediaSettled.status === "fulfilled" ? wikipediaSettled.value : { query: { search: [] } };
+    const exactResults = (wikidataExactData.search || []).map(item => ({
+      qid: item.id,
+      label: item.label,
+      description: item.description || "(No description)"
+    }));
+    const searchResults = (wikipediaData.query && wikipediaData.query.search) || [];
+
+    // Lookup Wikidata mappings for Wikipedia pages
+    const titles = searchResults.map(r => r.title).join("|");
+    const qidMap = {};
+    if (titles) {
+      const pagePropsData = await fetchJSON(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(titles)}&prop=pageprops&format=json&origin=*`);
+
+      // Map Wikipedia titles to QIDs
+      const pages = pagePropsData.query && pagePropsData.query.pages;
+      for (const pageId in pages) {
+        const page = pages[pageId];
+        if (page.pageprops && page.pageprops.wikibase_item) {
+          qidMap[page.title] = page.pageprops.wikibase_item;
+        }
       }
-    `;
-    const wikidataRes = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`);
-    if (wikidataRes.ok) {
-      const wikidataData = await wikidataRes.json();
-      wikidataData.results.bindings.forEach(entry => {
-        const qid = entry.item.value.split('/').pop();
-        wikidataInfo[qid] = {
-          label: entry.itemLabel?.value || "(Unknown)",
-          description: entry.itemDescription?.value || "(No description)"
-        };
-      });
+    }
+
+    // Now batch query Wikidata for real labels/descriptions
+    const qidsFromWikipedia = Object.values(qidMap).filter(qid => !!qid);
+    let wikidataInfo = {};
+
+    if (qidsFromWikipedia.length > 0) {
+      try {
+        wikidataInfo = await fetchWikidataBatch(qidsFromWikipedia);
+      } catch (err) {
+        console.error("Wikidata SPARQL error", err);
+      }
+    }
+
+    // Build the Wikipedia-based list (filtered to available QIDs)
+    const wikipediaResults = [];
+    for (const result of searchResults) {
+      const qid = qidMap[result.title];
+      if (qid && !exactResults.find(x => x.qid === qid) && wikidataInfo[qid]) { // deduplicate
+        wikipediaResults.push({
+          qid: qid,
+          label: wikidataInfo[qid].label,
+          description: wikidataInfo[qid].description
+        });
+      }
+      if (wikipediaResults.length >= 5) break; // only take 5
+    }
+
+    // --- Step 3: OSM Local and Global (already kicked off above, just await it now)
+    const [osmLocalSettled, osmGlobalSettled] = await osmResultsPromise;
+    if (osmLocalSettled.status === "rejected") console.error("OSM local search failed:", osmLocalSettled.reason);
+    const osmLocalRes = osmLocalSettled.status === "fulfilled" ? osmLocalSettled.value : [];
+    // When there's no location bias, no separate global request was made — reuse the local results as-is
+    let osmGlobalRes;
+    if (!hasLocation) {
+      osmGlobalRes = osmLocalRes;
+    } else if (osmGlobalSettled.status === "fulfilled") {
+      osmGlobalRes = osmGlobalSettled.value;
     } else {
-      console.error("Wikidata SPARQL error");
+      console.error("OSM global search failed:", osmGlobalSettled.reason);
+      osmGlobalRes = [];
     }
-  }
 
-  // Build the Wikipedia-based list (filtered to available QIDs)
-  const wikipediaResults = [];
-  for (const result of searchResults) {
-    const qid = qidMap[result.title];
-    if (qid && !exactResults.find(x => x.qid === qid) && wikidataInfo[qid]) { // deduplicate
-      wikipediaResults.push({
-        qid: qid,
-        label: wikidataInfo[qid].label,
-        description: wikidataInfo[qid].description
-      });
-    }
-    if (wikipediaResults.length >= 5) break; // only take 5
-  }
+    // --- Step 4: Display results
+    select.innerHTML = "";
 
-  // --- Step 3: OSM Local and Global
-  let osmLocalURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
-  if (lat && lon) {
-    osmLocalURL += `&viewbox=${lon-0.2},${lat+0.2},${lon+0.2},${lat-0.2}&bounded=1`;
-  }
-  const osmGlobalURL = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}`;
+    // Exact Wikidata matches first
+    exactResults.forEach(item => {
+      const option = document.createElement("option");
+      option.value = `wikidata:${item.qid}`;
+      option.text = `[Wikidata Exact] ${item.label} (${item.qid}) — ${item.description}`;
+      select.appendChild(option);
+    });
 
-  const [osmLocalRes, osmGlobalRes] = await Promise.all([
-    fetch(osmLocalURL).then(r => r.json()),
-    fetch(osmGlobalURL).then(r => r.json())
-  ]);
+    // Wikipedia-based Wikidata matches second
+    wikipediaResults.forEach(item => {
+      const option = document.createElement("option");
+      option.value = `wikidata:${item.qid}`;
+      option.text = `[Wikidata Related] ${item.label} (${item.qid}) — ${item.description}`;
+      select.appendChild(option);
+    });
 
-  // --- Step 4: Display results
-  select.innerHTML = "";
-
-  // Exact Wikidata matches first
-  exactResults.forEach(item => {
-    const option = document.createElement("option");
-    option.value = `wikidata:${item.qid}`;
-    option.text = `[Wikidata Exact] ${item.label} (${item.qid}) — ${item.description}`;
-    select.appendChild(option);
-  });
-
-  // Wikipedia-based Wikidata matches second
-  wikipediaResults.forEach(item => {
-    const option = document.createElement("option");
-    option.value = `wikidata:${item.qid}`;
-    option.text = `[Wikidata Related] ${item.label} (${item.qid}) — ${item.description}`;
-    select.appendChild(option);
-  });
-
-  // OSM local results
-  osmLocalRes.forEach(item => {
-    const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
-    const option = document.createElement("option");
-    option.value = `osm:${osmId}`;
-    option.text = `[OSM Nearby] ${item.display_name}`;
-    select.appendChild(option);
-  });
-
-  // OSM global fallback results
-  const localIds = new Set(osmLocalRes.map(item => `${item.osm_type.toLowerCase()}/${item.osm_id}`));
-  osmGlobalRes.forEach(item => {
-    const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
-    if (!localIds.has(osmId)) {
+    // OSM local results
+    osmLocalRes.forEach(item => {
+      const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
       const option = document.createElement("option");
       option.value = `osm:${osmId}`;
-      option.text = `[OSM Global] ${item.display_name}`;
+      option.text = `[OSM Nearby] ${item.display_name}`;
       select.appendChild(option);
+    });
+
+    // OSM global fallback results
+    const localIds = new Set(osmLocalRes.map(item => `${item.osm_type.toLowerCase()}/${item.osm_id}`));
+    osmGlobalRes.forEach(item => {
+      const osmId = `${item.osm_type.toLowerCase()}/${item.osm_id}`;
+      if (!localIds.has(osmId)) {
+        const option = document.createElement("option");
+        option.value = `osm:${osmId}`;
+        option.text = `[OSM Global] ${item.display_name}`;
+        select.appendChild(option);
+      }
+    });
+
+    if (!select.options.length) {
+      select.innerHTML = "<option>No results found</option>";
     }
-  });
+  } catch (err) {
+    console.error("Entity search failed:", err);
+    select.innerHTML = "<option>Search failed — please try again</option>";
+  } finally {
+    searchInFlight = false;
+    if (searchButton) searchButton.disabled = false;
+  }
 }
 
 async function fetchOSMLabelsInBatch(osmIds) {
@@ -240,8 +322,7 @@ async function fetchOSMLabelsInBatch(osmIds) {
   }).filter(Boolean); // Remove bad ids
 
   const url = `https://nominatim.openstreetmap.org/lookup?osm_ids=${osmIdList.join(",")}&format=json`;
-  const res = await fetch(url);
-  const data = await res.json();
+  const data = await fetchJSON(url);
 
   const result = {};
   if (Array.isArray(data)) {
@@ -260,163 +341,327 @@ async function fetchOSMLabelsInBatch(osmIds) {
 
 // --- Log Activity
 async function logActivity() {
+  if (loggingInFlight) return; // prevent duplicate submissions from rapid double-clicks
+
   const qid = document.getElementById("resultSelect").value.trim();
   const action = document.getElementById("action").value.trim().toLowerCase();
   const selectedDate = document.getElementById("date").value;
   if (!qid || !action || !selectedDate) { alert("Please complete all fields."); return; }
 
-  document.getElementById("loggingStatus").innerText = "🔄 Logging activity...";
-  const body = new URLSearchParams({ action, qid, timestamp: selectedDate });
-  await fetch(webAppURL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
-  document.getElementById("status").textContent = `✔️ Logged successfully for ${selectedDate}!`;
-  document.getElementById("search").value = "";
-  document.getElementById("resultSelect").innerHTML = "";
-  document.getElementById("action").value = "";
-  const todayLocal = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().split('T')[0];
-  document.getElementById("date").value = todayLocal;
-  await buildTimeline();
-  document.getElementById("loggingStatus").innerText = "";
+  const logButton = document.getElementById("logButton");
+  loggingInFlight = true;
+  if (logButton) logButton.disabled = true;
+  document.getElementById("loggingStatus").innerText = "Logging activity...";
+
+  try {
+    const body = new URLSearchParams({ action, qid, timestamp: selectedDate });
+    await fetch(webAppURL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
+    document.getElementById("status").textContent = `Logged successfully for ${selectedDate}!`;
+    document.getElementById("search").value = "";
+    document.getElementById("resultSelect").innerHTML = "";
+    document.getElementById("action").value = "";
+    document.getElementById("date").value = toLocalDateString(new Date());
+    await buildTimeline(true); // force refresh so the newly logged entry shows up
+  } catch (err) {
+    console.error("Failed to log activity:", err);
+    document.getElementById("status").textContent = "Failed to log activity — please try again.";
+  } finally {
+    document.getElementById("loggingStatus").innerText = "";
+    loggingInFlight = false;
+    if (logButton) logButton.disabled = false;
+  }
 }
 
-// --- Build Timeline
-async function buildTimeline() {
-  const timeline = document.getElementById("timeline");
-  timeline.innerHTML = "";
-  document.getElementById("loadingTimeline").innerText = "🔄 Loading timeline...";
-  timelineText = "";
-
-  const res = await fetch(SHEET_CSV_URL);
-  const text = await res.text();
-  const rows = text.trim().split("\n").map(row => row.split(","));
-  rows.shift(); // remove header
-
-  const grouped = {};
+// --- Fetch any Wikidata/OSM entity info referenced by `rows` that isn't cached yet
+async function ensureEntityCache(rows) {
   const qidsToFetch = new Set();
   const osmsToFetch = new Set();
-  const cache = {};
 
-  for (const [timestamp, action, qid] of rows) {
-    if (!grouped[timestamp]) grouped[timestamp] = [];
-    grouped[timestamp].push({ action, qid });
-    
+  for (const [, , qid] of rows) {
     const trimmedQid = (qid || "").trim();
     if (trimmedQid.startsWith("wikidata:")) {
       const id = trimmedQid.split(":")[1];
-      if (!cache[id]) {
-        qidsToFetch.add(id);
-      }
+      if (!entityCache[id]) qidsToFetch.add(id);
     } else if (trimmedQid.startsWith("osm:")) {
       const id = trimmedQid.split(":")[1];
-      if (!cache[id]) {
-        osmsToFetch.add(id);
-      }
+      if (!entityCache[id]) osmsToFetch.add(id);
     }
   }
 
   // --- Batch fetch missing Wikidata entries
   if (qidsToFetch.size > 0) {
-    const qidArray = Array.from(qidsToFetch);
-  const sparql = `
-    SELECT ?item ?itemLabel ?itemDescription ?kgid ?freebase WHERE {
-      VALUES ?item { ${qidArray.map(id => `wd:${id}`).join(' ')} }
-      OPTIONAL { ?item wdt:P2671 ?kgid. }
-      OPTIONAL { ?item wdt:P646 ?freebase. }
-      SERVICE wikibase:label { bd:serviceParam wikibase:language "en". }
-    }
-  `;
-    const wikidataRes = await fetch(`https://query.wikidata.org/sparql?format=json&query=${encodeURIComponent(sparql)}`);
-    if (wikidataRes.ok) {
-      const wikidataData = await wikidataRes.json();
-	wikidataData.results.bindings.forEach(entry => {
-	  const id = entry.item.value.split('/').pop();
-	  cache[id] = {
-	    label: entry.itemLabel?.value || "(Unknown)",
-	    description: entry.itemDescription?.value || "(No description)",
-	    kgid: entry.kgid?.value || null,
-	    freebase: entry.freebase?.value || null
-	  };
-	});
-    } else {
-      console.error("Wikidata SPARQL error during timeline build.");
+    try {
+      const wikidataInfo = await fetchWikidataBatch(Array.from(qidsToFetch), { includeExternalIds: true });
+      Object.assign(entityCache, wikidataInfo);
+    } catch (err) {
+      console.error("Wikidata SPARQL error during timeline build.", err);
     }
   }
-  
-  // --- Before building the DOM, batch fetch all OSM missing labels
+
+  // --- Batch fetch missing OSM labels
   if (osmsToFetch.size > 0) {
-    const osmArray = Array.from(osmsToFetch);
-    const osmData = await fetchOSMLabelsInBatch(osmArray);
-    for (const id in osmData) {
-      cache[id] = osmData[id];
-    }
-  }
-
-  // --- Build Timeline normally
-  const actionIcons = {
-    watched: "📺", read: "📖", played: "🎮", visited: "📍",
-    "biked at": "🚴", "camped at": "⛺", "hiked at": "🥾",
-    "bouldered at": "🧗", "exercised at": "🏋️", "ate at": "🍽️",
-    "shopped at": "🛍️"
-  };
-
-  for (const timestamp of Object.keys(grouped).sort().reverse()) {
-    const dayEntry = document.createElement("li");
-    dayEntry.className = "timeline-item";
-    const dayHeader = `<h4>${timestamp}</h4>`;
-    let content = "<ul>";
-    timelineText += `\n${timestamp}\n`;
-
-    for (const { action, qid } of grouped[timestamp]) {
-      const trimmedQid = (qid || "").trim();
-      const icon = actionIcons[action] || "";
-      let label = trimmedQid;
-      let description = "";
-      let link = "";
-
-      if (trimmedQid.startsWith("wikidata:")) {
-        const id = trimmedQid.split(":")[1];
-        const data = cache[id];
-        label = data?.label || "(Unknown)";
-        description = data?.description || "(No description)";
-  
-        if (data?.kgid) {
-          link = `https://www.google.com/search?kgmid=${data.kgid}`;
-        } else if (data?.freebase) {
-          link = `https://www.google.com/search?kgmid=${data.freebase}`;
-        } else {
-          link = `https://www.wikidata.org/wiki/${id}`;
-        }
-      } else if (trimmedQid.startsWith("osm:")) {
-        const id = trimmedQid.split(":")[1];
-        const data = cache[id];
-        label = data?.label || "(Unknown)";
-        description = data?.description || "(OpenStreetMap)";
-        link = `https://www.openstreetmap.org/${id}`;
+    try {
+      const osmArray = Array.from(osmsToFetch);
+      const osmData = await fetchOSMLabelsInBatch(osmArray);
+      for (const id in osmData) {
+        entityCache[id] = osmData[id];
       }
-
-      content += `<li>${icon} You ${action} <a href="${link}" target="_blank"><strong>"${label}"</strong></a> — ${description} <span class="copy-link" data-qid="${trimmedQid}" data-action="${action}" data-label="${label}" onclick="copyActivity(this)">[copy]</span></li>`;
-      timelineText += `- You ${action} "${label}" — ${description}\n`;
+    } catch (err) {
+      console.error("OSM lookup error during timeline build.", err);
     }
-
-    content += "</ul>";
-    dayEntry.innerHTML = dayHeader + content;
-    timeline.appendChild(dayEntry);
   }
-
-  document.getElementById("loadingTimeline").innerText = "";
 }
 
-// --- Export Timeline
-function exportTimeline() {
-  const textWindow = window.open("", "_blank");
-  textWindow.document.write(`<pre>${timelineText.trim()}</pre>`);
-  textWindow.document.title = "Exported Activity Log";
-  textWindow.document.close();
+// --- Group rows by timestamp
+function groupRowsByTimestamp(rows) {
+  const grouped = {};
+  for (const [timestamp, action, qid] of rows) {
+    if (!grouped[timestamp]) grouped[timestamp] = [];
+    grouped[timestamp].push({ action, qid });
+  }
+  return grouped;
+}
+
+// --- Build the plain-text timeline export for a set of rows (assumes entityCache is populated)
+function renderTimelineText(rows) {
+  const grouped = groupRowsByTimestamp(rows);
+  let text = "";
+  for (const timestamp of Object.keys(grouped).sort().reverse()) {
+    text += `\n${timestamp}\n`;
+    for (const { action, qid } of grouped[timestamp]) {
+      const trimmedQid = (qid || "").trim();
+      let label = trimmedQid;
+      let description = "";
+
+      if (trimmedQid.startsWith("wikidata:") || trimmedQid.startsWith("osm:")) {
+        const id = trimmedQid.split(":")[1];
+        const data = entityCache[id];
+        label = data?.label || "(Unknown)";
+        description = data?.description || (trimmedQid.startsWith("osm:") ? "(OpenStreetMap)" : "(No description)");
+      }
+
+      text += `- You ${action} "${label}" — ${description}\n`;
+    }
+  }
+  return text;
+}
+
+// --- Minimal RFC4180-style CSV parser (handles quoted fields with embedded commas/newlines/escaped quotes)
+function parseCSV(text) {
+  const rows = [];
+  let row = [];
+  let field = "";
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const next = text[i + 1];
+
+    if (inQuotes) {
+      if (char === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (char === '"') {
+        inQuotes = false;
+      } else {
+        field += char;
+      }
+    } else if (char === '"') {
+      inQuotes = true;
+    } else if (char === ',') {
+      row.push(field);
+      field = "";
+    } else if (char === '\r') {
+      // ignore; \n (handled below) marks the actual row end
+    } else if (char === '\n') {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += char;
+    }
+  }
+
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+// --- Fetch timeline rows from the sheet, reusing the cached copy unless a refresh is forced
+async function fetchTimelineRows(forceRefresh = false) {
+  if (allRows.length > 0 && !forceRefresh) return allRows;
+
+  const res = await fetch(SHEET_CSV_URL);
+  if (!res.ok) throw new Error(`Failed to load activity sheet (HTTP ${res.status})`);
+  const text = await res.text();
+  const parsedRows = parseCSV(text);
+  parsedRows.shift(); // remove header
+  // Drop blank/malformed rows (e.g. stray blank lines) that are missing a timestamp or entity id
+  allRows = parsedRows.filter(row => (row[0] || "").trim() && (row[2] || "").trim());
+  return allRows;
+}
+
+// --- Build Timeline
+async function buildTimeline(forceRefresh = false) {
+  if (buildTimelineInFlight) return; // avoid overlapping rebuilds
+
+  buildTimelineInFlight = true;
+  const timeline = document.getElementById("timeline");
+  timeline.innerHTML = "";
+  document.getElementById("loadingTimeline").innerText = "Loading timeline...";
+  timelineText = "";
+
+  try {
+    const rows = await fetchTimelineRows(forceRefresh);
+
+    let hasOlderEntries = false;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - TIMELINE_DAYS_LIMIT);
+    const cutoffStr = toLocalDateString(cutoff);
+
+    const displayRows = [];
+    for (const row of rows) {
+      const [timestamp] = row;
+      if (timestamp < cutoffStr) {
+        hasOlderEntries = true;
+        if (!showFullTimeline) continue;
+      }
+      displayRows.push(row);
+    }
+
+    // --- Fetch any entity info needed for the rows currently being displayed
+    await ensureEntityCache(displayRows);
+
+    const grouped = groupRowsByTimestamp(displayRows);
+
+    for (const timestamp of Object.keys(grouped).sort().reverse()) {
+      const dayEntry = document.createElement("li");
+      dayEntry.className = "timeline-item";
+
+      const dayHeader = document.createElement("h4");
+      dayHeader.textContent = timestamp;
+      dayEntry.appendChild(dayHeader);
+
+      const list = document.createElement("ul");
+
+      for (const { action, qid } of grouped[timestamp]) {
+        const trimmedQid = (qid || "").trim();
+        let label = trimmedQid;
+        let description = "";
+        let link = "";
+
+        if (trimmedQid.startsWith("wikidata:")) {
+          const id = trimmedQid.split(":")[1];
+          const data = entityCache[id];
+          label = data?.label || "(Unknown)";
+          description = data?.description || "(No description)";
+
+          if (data?.kgid) {
+            link = `https://www.google.com/search?kgmid=${data.kgid}`;
+          } else if (data?.freebase) {
+            link = `https://www.google.com/search?kgmid=${data.freebase}`;
+          } else {
+            link = `https://www.wikidata.org/wiki/${id}`;
+          }
+        } else if (trimmedQid.startsWith("osm:")) {
+          const id = trimmedQid.split(":")[1];
+          const data = entityCache[id];
+          label = data?.label || "(Unknown)";
+          description = data?.description || "(OpenStreetMap)";
+          link = `https://www.openstreetmap.org/${id}`;
+        }
+
+        const itemEl = document.createElement("li");
+        itemEl.appendChild(document.createTextNode(`You ${action} `));
+
+        const anchor = document.createElement("a");
+        anchor.href = link;
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+        const strong = document.createElement("strong");
+        strong.textContent = `"${label}"`;
+        anchor.appendChild(strong);
+        itemEl.appendChild(anchor);
+
+        itemEl.appendChild(document.createTextNode(` — ${description} `));
+
+        const copySpan = document.createElement("span");
+        copySpan.className = "copy-link";
+        copySpan.textContent = "[copy]";
+        copySpan.dataset.qid = trimmedQid;
+        copySpan.dataset.action = action;
+        copySpan.dataset.label = label;
+        copySpan.addEventListener("click", () => copyActivity(copySpan));
+        itemEl.appendChild(copySpan);
+
+        list.appendChild(itemEl);
+      }
+
+      dayEntry.appendChild(list);
+      timeline.appendChild(dayEntry);
+    }
+
+    timelineText = renderTimelineText(displayRows);
+
+    // Only offer to expand to the full timeline; once it's loaded there's no need to collapse back
+    if (hasOlderEntries && !showFullTimeline) {
+      const toggleEntry = document.createElement("li");
+      toggleEntry.className = "timeline-toggle";
+      const toggleButton = document.createElement("button");
+      toggleButton.className = "export-button";
+      toggleButton.textContent = "View Full Timeline";
+      toggleButton.onclick = () => {
+        showFullTimeline = true;
+        buildTimeline();
+      };
+      toggleEntry.appendChild(toggleButton);
+      timeline.appendChild(toggleEntry);
+    }
+
+    document.getElementById("loadingTimeline").innerText = "";
+  } catch (err) {
+    console.error("Failed to build timeline:", err);
+    document.getElementById("loadingTimeline").innerText = "Failed to load timeline. Please try again.";
+  } finally {
+    buildTimelineInFlight = false;
+  }
+}
+
+// --- Export Timeline (always exports the full history, regardless of what's currently displayed)
+async function exportTimeline() {
+  document.getElementById("loadingTimeline").innerText = "Preparing full export...";
+
+  try {
+    await ensureEntityCache(allRows);
+    const fullTimelineText = renderTimelineText(allRows);
+
+    const textWindow = window.open("", "_blank");
+    if (!textWindow) {
+      alert("Please allow pop-ups to export the timeline.");
+      return;
+    }
+    textWindow.opener = null; // sever reverse-tabnabbing access to this page
+    textWindow.document.title = "Exported Activity Log";
+    const pre = textWindow.document.createElement("pre");
+    pre.textContent = fullTimelineText.trim();
+    textWindow.document.body.appendChild(pre);
+  } catch (err) {
+    console.error("Failed to export timeline:", err);
+    alert("Failed to prepare the export. Please try again.");
+  } finally {
+    document.getElementById("loadingTimeline").innerText = "";
+  }
 }
 
 // --- Copy Activity
 function copyActivity(el) {
   document.getElementById("action").value = el.dataset.action;
   const select = document.getElementById("resultSelect");
+  select.innerHTML = ""; // clear stale search results before inserting the copied entry
   const newOption = document.createElement("option");
   newOption.value = el.dataset.qid;
   newOption.text = el.dataset.label;
