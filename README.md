@@ -1,6 +1,6 @@
 # EntityLog
 
-A lightweight activity logger that uses structured data from Wikidata and OpenStreetMap, stored privately in Google Sheets.
+A lightweight activity logger that uses structured data from Wikidata, OpenStreetMap, and ISBN (via Open Library), stored privately in Google Sheets.
 
 ---
 
@@ -16,8 +16,9 @@ A lightweight activity logger that uses structured data from Wikidata and OpenSt
 
 EntityLog lets you:
 - Search for real-world entities (from Wikidata and OpenStreetMap)
-- Log actions like "watched", "played", "ate at", etc
-- View your activities in a clean timeline
+- Directly enter ISBNs for books without Wikidata entries (resolved via Open Library)
+- Log actions like "watched", "read", "played", "ate at", etc
+- View your activities in a clean timeline with direct entity links
 - Export the full history as readable text
 
 All your data is stored safely in a private **Google Sheets** file.  
@@ -41,9 +42,9 @@ The frontend is pure HTML + JavaScript, no backend servers needed.
 ## Why structured entities?
 
 Instead of freeform notes ("I went to Starbucks"),  
-EntityLog saves the **entity IDs**.
+EntityLog saves the **entity IDs** (Wikidata QIDs, OpenStreetMap IDs, or ISBNs).
 
-- Structured IDs from Wikidata/OSM become richer over time — your old entries gain more metadata automatically.
+- Structured IDs from Wikidata/OSM/Open Library become richer over time — your old entries gain more metadata automatically.
 
 - Structured metadata enables advanced analytics, better filtering, smarter summaries, and more precise querying in the future.
 

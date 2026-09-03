@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://www.wikidata.org">
   <link rel="preconnect" href="https://en.wikipedia.org">
   <link rel="preconnect" href="https://query.wikidata.org">
+  <link rel="preconnect" href="https://openlibrary.org">
   <link rel="preconnect" href="https://docs.google.com">
   <link rel="preconnect" href="https://script.google.com">
   <style>
@@ -65,7 +66,13 @@
       <button id="searchButton" onclick="searchEntities()">Search</button>
     </div>
 
-    <label>Results:</label>
+    <label>Or Enter ISBN:</label>
+    <div class="search-row">
+      <input type="text" id="isbn" placeholder="e.g. 978-0-14-044913-6" onkeydown="if (event.key === 'Enter') addISBN()">
+      <button id="isbnButton" type="button" onclick="addISBN()">Use ISBN</button>
+    </div>
+
+    <label>Selected Entity / Results:</label>
     <select id="resultSelect"></select>
 
     <label>Date:</label>
@@ -142,6 +149,133 @@ async function fetchWikidataBatch(qids, { includeExternalIds = false } = {}) {
     };
   });
   return result;
+}
+
+// --- Normalize and clean ISBN string (removes 'isbn:' prefix, hyphens, spaces, uppercase 'X')
+function cleanISBN(input) {
+  if (!input) return "";
+  return input.trim().replace(/^isbn:?\s*/i, "").replace(/[-\s]/g, "").toUpperCase();
+}
+
+// --- Check if string is a valid ISBN-10 or ISBN-13
+function isValidISBN(isbn) {
+  const cleaned = cleanISBN(isbn);
+  return /^[0-9]{9}[0-9X]$/.test(cleaned) || /^(978|979)[0-9]{10}$/.test(cleaned);
+}
+
+// --- Batch fetch title, authors, and publish date for ISBNs via Open Library API
+async function fetchISBNBatch(isbns) {
+  if (isbns.length === 0) return {};
+
+  const cleanMap = {};
+  const cleanIsbns = [];
+  for (const raw of isbns) {
+    const cleaned = cleanISBN(raw);
+    if (!cleaned) continue;
+    if (!cleanMap[cleaned]) {
+      cleanMap[cleaned] = new Set();
+      cleanIsbns.push(cleaned);
+    }
+    cleanMap[cleaned].add(raw);
+  }
+
+  const result = {};
+  // Process in batches of 30 to stay well within URL length limits
+  for (let i = 0; i < cleanIsbns.length; i += 30) {
+    const batch = cleanIsbns.slice(i, i + 30);
+    const bibkeys = batch.map(id => `ISBN:${id}`).join(",");
+    const url = `https://openlibrary.org/api/books?bibkeys=${encodeURIComponent(bibkeys)}&format=json&jscmd=data`;
+
+    try {
+      const data = await fetchJSON(url);
+      for (const cleanId of batch) {
+        const book = data[`ISBN:${cleanId}`];
+        if (book) {
+          const authorNames = (book.authors || []).map(a => a.name).filter(Boolean).join(", ");
+          const authors = authorNames || book.by_statement || "";
+          let desc = authors ? `by ${authors}` : "";
+          if (book.publish_date) {
+            desc = desc ? `${desc} (${book.publish_date})` : `Published ${book.publish_date}`;
+          }
+          let label = book.title || `ISBN ${cleanId}`;
+          if (book.subtitle) {
+            label += `: ${book.subtitle}`;
+          }
+          const item = {
+            label,
+            description: desc || "(Book)",
+            url: (book.url || `https://openlibrary.org/isbn/${cleanId}`).replace(/^http:/, "https:")
+          };
+          result[cleanId] = item;
+          for (const raw of cleanMap[cleanId]) {
+            result[raw] = item;
+          }
+        } else {
+          const fallback = {
+            label: `ISBN ${cleanId}`,
+            description: "(Book)",
+            url: `https://openlibrary.org/isbn/${cleanId}`
+          };
+          result[cleanId] = fallback;
+          for (const raw of cleanMap[cleanId]) {
+            result[raw] = fallback;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("Open Library batch lookup error", err);
+    }
+  }
+
+  return result;
+}
+
+// --- Add an ISBN directly to the entity selection
+async function addISBN() {
+  const isbnInput = document.getElementById("isbn");
+  const rawValue = isbnInput ? isbnInput.value.trim() : "";
+  const cleaned = cleanISBN(rawValue);
+
+  if (!cleaned) {
+    alert("Please enter an ISBN.");
+    return;
+  }
+  if (!isValidISBN(cleaned)) {
+    if (!confirm(`"${rawValue}" does not appear to be a standard 10- or 13-digit ISBN. Use it anyway?`)) {
+      return;
+    }
+  }
+
+  const select = document.getElementById("resultSelect");
+  select.innerHTML = "";
+  const option = document.createElement("option");
+  option.value = `isbn:${cleaned}`;
+  option.text = `[ISBN] ${cleaned} — Loading book details...`;
+  option.selected = true;
+  select.appendChild(option);
+
+  // Set action to "read" by default if not set yet
+  const actionInput = document.getElementById("action");
+  if (!actionInput.value.trim()) {
+    actionInput.value = "read";
+  }
+
+  // Clear entity search box
+  document.getElementById("search").value = "";
+
+  // Lookup metadata asynchronously to update display
+  try {
+    const bookData = await fetchISBNBatch([cleaned]);
+    if (bookData[cleaned]) {
+      entityCache[cleaned] = bookData[cleaned];
+      option.text = `[ISBN] ${bookData[cleaned].label} (${cleaned}) — ${bookData[cleaned].description}`;
+    } else {
+      option.text = `[ISBN] ${cleaned}`;
+    }
+  } catch (err) {
+    console.warn("Failed to fetch ISBN metadata:", err);
+    option.text = `[ISBN] ${cleaned}`;
+  }
 }
 
 window.onload = () => {
@@ -263,6 +397,14 @@ async function searchEntities() {
     select.innerHTML = "";
 
     // Exact Wikidata matches first
+    const cleanedQueryIsbn = cleanISBN(query);
+    if (isValidISBN(cleanedQueryIsbn)) {
+      const isbnOption = document.createElement("option");
+      isbnOption.value = `isbn:${cleanedQueryIsbn}`;
+      isbnOption.text = `[ISBN] ${cleanedQueryIsbn}`;
+      select.appendChild(isbnOption);
+    }
+
     exactResults.forEach(item => {
       const option = document.createElement("option");
       option.value = `wikidata:${item.qid}`;
@@ -343,7 +485,15 @@ async function fetchOSMLabelsInBatch(osmIds) {
 async function logActivity() {
   if (loggingInFlight) return; // prevent duplicate submissions from rapid double-clicks
 
-  const qid = document.getElementById("resultSelect").value.trim();
+  let qid = document.getElementById("resultSelect").value.trim();
+  const isbnInput = document.getElementById("isbn");
+  if (!qid && isbnInput && isbnInput.value.trim()) {
+    const cleaned = cleanISBN(isbnInput.value.trim());
+    if (cleaned) {
+      qid = `isbn:${cleaned}`;
+    }
+  }
+
   const action = document.getElementById("action").value.trim().toLowerCase();
   const selectedDate = document.getElementById("date").value;
   if (!qid || !action || !selectedDate) { alert("Please complete all fields."); return; }
@@ -358,6 +508,7 @@ async function logActivity() {
     await fetch(webAppURL, { method: "POST", mode: "no-cors", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body });
     document.getElementById("status").textContent = `Logged successfully for ${selectedDate}!`;
     document.getElementById("search").value = "";
+    if (document.getElementById("isbn")) document.getElementById("isbn").value = "";
     document.getElementById("resultSelect").innerHTML = "";
     document.getElementById("action").value = "";
     document.getElementById("date").value = toLocalDateString(new Date());
@@ -372,10 +523,11 @@ async function logActivity() {
   }
 }
 
-// --- Fetch any Wikidata/OSM entity info referenced by `rows` that isn't cached yet
+// --- Fetch any Wikidata/OSM/ISBN entity info referenced by `rows` that isn't cached yet
 async function ensureEntityCache(rows) {
   const qidsToFetch = new Set();
   const osmsToFetch = new Set();
+  const isbnsToFetch = new Set();
 
   for (const [, , qid] of rows) {
     const trimmedQid = (qid || "").trim();
@@ -385,6 +537,10 @@ async function ensureEntityCache(rows) {
     } else if (trimmedQid.startsWith("osm:")) {
       const id = trimmedQid.split(":")[1];
       if (!entityCache[id]) osmsToFetch.add(id);
+    } else if (trimmedQid.startsWith("isbn:")) {
+      const id = trimmedQid.slice(5).trim();
+      const cleanId = cleanISBN(id);
+      if (!entityCache[id] && !entityCache[cleanId]) isbnsToFetch.add(id);
     }
   }
 
@@ -408,6 +564,16 @@ async function ensureEntityCache(rows) {
       }
     } catch (err) {
       console.error("OSM lookup error during timeline build.", err);
+    }
+  }
+
+  // --- Batch fetch missing ISBN book details
+  if (isbnsToFetch.size > 0) {
+    try {
+      const isbnInfo = await fetchISBNBatch(Array.from(isbnsToFetch));
+      Object.assign(entityCache, isbnInfo);
+    } catch (err) {
+      console.error("Open Library lookup error during timeline build.", err);
     }
   }
 }
@@ -438,6 +604,12 @@ function renderTimelineText(rows) {
         const data = entityCache[id];
         label = data?.label || "(Unknown)";
         description = data?.description || (trimmedQid.startsWith("osm:") ? "(OpenStreetMap)" : "(No description)");
+      } else if (trimmedQid.startsWith("isbn:")) {
+        const id = trimmedQid.slice(5).trim();
+        const cleanId = cleanISBN(id);
+        const data = entityCache[cleanId] || entityCache[id];
+        label = data?.label || `ISBN ${id}`;
+        description = data?.description || "(Book)";
       }
 
       text += `- You ${action} "${label}" — ${description}\n`;
@@ -573,6 +745,13 @@ async function buildTimeline(forceRefresh = false) {
           label = data?.label || "(Unknown)";
           description = data?.description || "(OpenStreetMap)";
           link = `https://www.openstreetmap.org/${id}`;
+        } else if (trimmedQid.startsWith("isbn:")) {
+          const id = trimmedQid.slice(5).trim();
+          const cleanId = cleanISBN(id);
+          const data = entityCache[cleanId] || entityCache[id];
+          label = data?.label || `ISBN ${id}`;
+          description = data?.description || "(Book)";
+          link = data?.url ? data.url.replace(/^http:/, "https:") : `https://openlibrary.org/isbn/${encodeURIComponent(cleanId || id)}`;
         }
 
         const itemEl = document.createElement("li");
@@ -667,6 +846,10 @@ function copyActivity(el) {
   newOption.text = el.dataset.label;
   newOption.selected = true;
   select.appendChild(newOption);
+  if (el.dataset.qid && el.dataset.qid.startsWith("isbn:")) {
+    const isbnEl = document.getElementById("isbn");
+    if (isbnEl) isbnEl.value = el.dataset.qid.slice(5).trim();
+  }
   showToast("Copied!");
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
