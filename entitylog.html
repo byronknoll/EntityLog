@@ -101,6 +101,7 @@ let timelineText = "";
 let showFullTimeline = false;
 let allRows = [];
 const entityCache = {};
+const authorCache = {};
 let searchInFlight = false;
 let loggingInFlight = false;
 let buildTimelineInFlight = false;
@@ -163,7 +164,100 @@ function isValidISBN(isbn) {
   return /^[0-9]{9}[0-9X]$/.test(cleaned) || /^(978|979)[0-9]{10}$/.test(cleaned);
 }
 
-// --- Batch fetch title, authors, and publish date for ISBNs via Open Library API
+// --- Fetch author name for an Open Library author key (/authors/OL...)
+async function fetchAuthorName(key) {
+  if (!key) return "";
+  if (authorCache[key]) return authorCache[key];
+  try {
+    const data = await fetchJSON(`https://openlibrary.org${key}.json`);
+    const name = data.name || "";
+    if (name) authorCache[key] = name;
+    return name;
+  } catch (err) {
+    return "";
+  }
+}
+
+// --- Fetch book metadata for a single cleaned ISBN using Open Library edition endpoint with search fallback
+async function fetchBookByISBN(cleanId) {
+  // 1. Try Open Library direct edition endpoint
+  try {
+    const book = await fetchJSON(`https://openlibrary.org/isbn/${cleanId}.json`);
+    if (book && book.title) {
+      let label = book.title;
+      if (book.subtitle) {
+        label += `: ${book.subtitle}`;
+      }
+
+      let authors = "";
+      if (book.by_statement) {
+        authors = book.by_statement;
+      } else if (book.author) {
+        authors = Array.isArray(book.author) ? book.author.join(", ") : book.author;
+      } else if (book.contributors && book.contributors.length > 0) {
+        const authorContribs = book.contributors.filter(c => !c.role || /author/i.test(c.role));
+        const list = authorContribs.length > 0 ? authorContribs : book.contributors;
+        authors = list.map(c => c.name).filter(Boolean).join(", ");
+      }
+      if (!authors && book.authors && book.authors.length > 0) {
+        try {
+          const names = await Promise.all(
+            book.authors.slice(0, 3).map(a => a.key ? fetchAuthorName(a.key) : Promise.resolve(""))
+          );
+          authors = names.filter(Boolean).join(", ");
+        } catch (e) {
+          // Ignore author lookup error
+        }
+      }
+
+      let desc = authors ? `by ${authors}` : "";
+      if (book.publish_date) {
+        desc = desc ? `${desc} (${book.publish_date})` : `Published ${book.publish_date}`;
+      }
+
+      return {
+        label,
+        description: desc || "(Book)",
+        url: `https://openlibrary.org/isbn/${cleanId}`
+      };
+    }
+  } catch (err) {
+    // Edition endpoint failed or returned 404, try search fallback
+  }
+
+  // 2. Fallback to Open Library search API
+  try {
+    const searchData = await fetchJSON(`https://openlibrary.org/search.json?isbn=${cleanId}&fields=title,subtitle,author_name,first_publish_year`);
+    const doc = searchData.docs && searchData.docs[0];
+    if (doc && doc.title) {
+      let label = doc.title;
+      if (doc.subtitle) {
+        label += `: ${doc.subtitle}`;
+      }
+      const authorNames = (doc.author_name || []).join(", ");
+      let desc = authorNames ? `by ${authorNames}` : "";
+      if (doc.first_publish_year) {
+        desc = desc ? `${desc} (${doc.first_publish_year})` : `Published ${doc.first_publish_year}`;
+      }
+      return {
+        label,
+        description: desc || "(Book)",
+        url: `https://openlibrary.org/isbn/${cleanId}`
+      };
+    }
+  } catch (err) {
+    // Search fallback failed
+  }
+
+  // 3. Fallback when metadata cannot be retrieved
+  return {
+    label: `ISBN ${cleanId}`,
+    description: "(Book)",
+    url: `https://openlibrary.org/isbn/${cleanId}`
+  };
+}
+
+// --- Fetch title, authors, and publish date for ISBNs via Open Library API
 async function fetchISBNBatch(isbns) {
   if (isbns.length === 0) return {};
 
@@ -180,51 +274,19 @@ async function fetchISBNBatch(isbns) {
   }
 
   const result = {};
-  // Process in batches of 30 to stay well within URL length limits
-  for (let i = 0; i < cleanIsbns.length; i += 30) {
-    const batch = cleanIsbns.slice(i, i + 30);
-    const bibkeys = batch.map(id => `ISBN:${id}`).join(",");
-    const url = `https://openlibrary.org/api/books?bibkeys=${encodeURIComponent(bibkeys)}&format=json&jscmd=data`;
-
-    try {
-      const data = await fetchJSON(url);
-      for (const cleanId of batch) {
-        const book = data[`ISBN:${cleanId}`];
-        if (book) {
-          const authorNames = (book.authors || []).map(a => a.name).filter(Boolean).join(", ");
-          const authors = authorNames || book.by_statement || "";
-          let desc = authors ? `by ${authors}` : "";
-          if (book.publish_date) {
-            desc = desc ? `${desc} (${book.publish_date})` : `Published ${book.publish_date}`;
-          }
-          let label = book.title || `ISBN ${cleanId}`;
-          if (book.subtitle) {
-            label += `: ${book.subtitle}`;
-          }
-          const item = {
-            label,
-            description: desc || "(Book)",
-            url: (book.url || `https://openlibrary.org/isbn/${cleanId}`).replace(/^http:/, "https:")
-          };
-          result[cleanId] = item;
-          for (const raw of cleanMap[cleanId]) {
-            result[raw] = item;
-          }
-        } else {
-          const fallback = {
-            label: `ISBN ${cleanId}`,
-            description: "(Book)",
-            url: `https://openlibrary.org/isbn/${cleanId}`
-          };
-          result[cleanId] = fallback;
-          for (const raw of cleanMap[cleanId]) {
-            result[raw] = fallback;
-          }
+  const chunkSize = 5;
+  for (let i = 0; i < cleanIsbns.length; i += chunkSize) {
+    const chunk = cleanIsbns.slice(i, i + chunkSize);
+    const items = await Promise.all(chunk.map(id => fetchBookByISBN(id)));
+    chunk.forEach((cleanId, idx) => {
+      const item = items[idx];
+      result[cleanId] = item;
+      if (cleanMap[cleanId]) {
+        for (const raw of cleanMap[cleanId]) {
+          result[raw] = item;
         }
       }
-    } catch (err) {
-      console.error("Open Library batch lookup error", err);
-    }
+    });
   }
 
   return result;
@@ -266,7 +328,7 @@ async function addISBN() {
   // Lookup metadata asynchronously to update display
   try {
     const bookData = await fetchISBNBatch([cleaned]);
-    if (bookData[cleaned]) {
+    if (bookData[cleaned] && bookData[cleaned].label && bookData[cleaned].label !== `ISBN ${cleaned}`) {
       entityCache[cleaned] = bookData[cleaned];
       option.text = `[ISBN] ${bookData[cleaned].label} (${cleaned}) — ${bookData[cleaned].description}`;
     } else {
@@ -403,6 +465,12 @@ async function searchEntities() {
       isbnOption.value = `isbn:${cleanedQueryIsbn}`;
       isbnOption.text = `[ISBN] ${cleanedQueryIsbn}`;
       select.appendChild(isbnOption);
+      fetchISBNBatch([cleanedQueryIsbn]).then(bookData => {
+        if (bookData[cleanedQueryIsbn] && bookData[cleanedQueryIsbn].label && bookData[cleanedQueryIsbn].label !== `ISBN ${cleanedQueryIsbn}` && isbnOption.parentNode) {
+          entityCache[cleanedQueryIsbn] = bookData[cleanedQueryIsbn];
+          isbnOption.text = `[ISBN] ${bookData[cleanedQueryIsbn].label} (${cleanedQueryIsbn}) — ${bookData[cleanedQueryIsbn].description}`;
+        }
+      }).catch(() => {});
     }
 
     exactResults.forEach(item => {
